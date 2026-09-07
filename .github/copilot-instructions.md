@@ -1,0 +1,4 @@
+- Verify that the project scaffold is complete.
+- Customize the app for a mobile-first Korean restaurant loyalty program.
+- Keep the UI polished and responsive without a backend.
+- Build and verify the project before finishing.

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: kodokodo-rewards-api
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm run server
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: KODOKODO_DATA_PATH
+        value: /var/data/data.json
+      - key: FRONTEND_ORIGIN
+        sync: false
+    disk:
+      name: kodokodo-data
+      mountPath: /var/data
+      sizeGB: 1
