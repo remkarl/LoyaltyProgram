@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import './App.css'
+import { api } from './api.js'
 import {
   calculateEarnedPoints,
   canRedeemReward,
@@ -7,7 +8,6 @@ import {
   filterActivityForMember,
   getTierStatus,
   getVisibleNavItems,
-  hasProcessedReceipt,
   normalizeActivityLog,
   normalizeMembers,
   parsePurchaseAmount,
@@ -93,50 +93,41 @@ const navTitles = {
   Rewards: 'Redemption Engine',
 }
 
-const initialMemberDirectory = [
-  { memberId: 'KD-2048', name: 'Yuna Park', mobile: '+63 917 890 2241', email: 'yuna@kodokodo.ph', tier: 'Gold', lastVisit: 'Today', points: 2480, visits: 18 },
-  { memberId: 'KD-1186', name: 'Jay Araneta', mobile: '+63 917 555 1186', email: 'jay@kodokodo.ph', tier: 'Silver', lastVisit: '2 days ago', points: 860, visits: 11 },
-  { memberId: 'KD-0932', name: 'Mina Sol', mobile: '+63 917 555 0932', email: 'mina@kodokodo.ph', tier: 'Bronze', lastVisit: '5 days ago', points: 320, visits: 6 },
-  { memberId: 'KD-2214', name: 'Seung Ho', mobile: '+63 917 555 2214', email: 'seung@kodokodo.ph', tier: 'Gold', lastVisit: '1 week ago', points: 1320, visits: 14 },
-  { memberId: 'KD-1740', name: 'Ari Lim', mobile: '+63 917 555 1740', email: 'ari@kodokodo.ph', tier: 'Silver', lastVisit: '3 days ago', points: 760, visits: 9 },
-]
-
-const initialActivityLog = [
-  { memberId: 'KD-2048', type: 'earn', transactionId: 'TX-4812', receiptNo: 'RCP-4812', pointsBefore: 2466, pointsChange: 14, pointsAfter: 2480, action: 'Points earned', detail: 'Dinner receipt RCP-4812', amount: '+14 pts', date: 'Today' },
-  { memberId: 'KD-2048', type: 'redeem', transactionId: 'TX-4811', pointsBefore: 2780, pointsChange: -300, pointsAfter: 2480, action: 'Reward redeemed', detail: 'Premium banchan upgrade', amount: '-300 pts', date: 'Yesterday' },
-  { memberId: 'KD-2048', type: 'check-in', transactionId: 'TX-4800', pointsBefore: 2480, pointsChange: 0, pointsAfter: 2480, action: 'Member check-in', detail: 'Window booth preference', amount: 'Gold', date: 'Sep 05' },
-]
-
 const memberFilterOptions = ['All', 'Gold', 'Silver', 'Bronze']
-const storageKey = 'kodokodo-rewards-state'
 
-const getStoredRewardsState = () => {
+// Only the session (token + role + memberId) is kept in localStorage, so a
+// page refresh doesn't sign you out. Member and activity data always comes
+// live from the API — it's the shared source of truth, not a per-browser copy.
+const authStorageKey = 'kodokodo-auth'
+
+const getStoredAuth = () => {
   try {
-    const storedState = window.localStorage.getItem(storageKey)
-    return storedState ? JSON.parse(storedState) : null
+    const stored = window.localStorage.getItem(authStorageKey)
+    return stored ? JSON.parse(stored) : null
   } catch {
     return null
   }
 }
 
 function App() {
+  const storedAuth = getStoredAuth()
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [isBootstrapping, setIsBootstrapping] = useState(Boolean(storedAuth?.token))
   const [authMode, setAuthMode] = useState('login')
-  const [userRole, setUserRole] = useState('staff')
+  const [userRole, setUserRole] = useState(storedAuth?.role ?? 'staff')
   const [loginForm, setLoginForm] = useState({ email: '', password: '', role: 'staff' })
   const [signupForm, setSignupForm] = useState({ fullName: '', mobile: '', email: '', birthday: 'January', password: '' })
   const [loginError, setLoginError] = useState('')
-  const storedRewardsState = getStoredRewardsState()
   const [activeView, setActiveView] = useState('Overview')
   const [memberFilter, setMemberFilter] = useState('All')
   const [memberSearch, setMemberSearch] = useState('')
   const [selectedReward, setSelectedReward] = useState('')
-  const [activeMemberId, setActiveMemberId] = useState(storedRewardsState?.activeMemberId ?? 'KD-2048')
-  const [memberDirectory, setMemberDirectory] = useState(() => normalizeMembers(storedRewardsState?.memberDirectory ?? initialMemberDirectory))
-  const [activityLog, setActivityLog] = useState(() => normalizeActivityLog(storedRewardsState?.activityLog ?? initialActivityLog))
+  const [activeMemberId, setActiveMemberId] = useState(storedAuth?.memberId ?? '')
+  const [memberDirectory, setMemberDirectory] = useState([])
+  const [activityLog, setActivityLog] = useState([])
   const [joinForm, setJoinForm] = useState({ fullName: '', mobile: '', email: '', birthday: 'January' })
-  const [earnForm, setEarnForm] = useState({ memberId: 'KD-2048', receiptNo: '', purchaseAmount: '', serviceType: 'Dinner' })
-  const [redeemForm, setRedeemForm] = useState({ memberId: 'KD-2048', reward: redeemOptions[0].name, points: String(redeemOptions[0].points) })
+  const [earnForm, setEarnForm] = useState({ memberId: storedAuth?.memberId ?? '', receiptNo: '', purchaseAmount: '', serviceType: 'Dinner' })
+  const [redeemForm, setRedeemForm] = useState({ memberId: storedAuth?.memberId ?? '', reward: redeemOptions[0].name, points: String(redeemOptions[0].points) })
   const [statusMessage, setStatusMessage] = useState('Ready for member capture')
   const visibleNavItems = getVisibleNavItems(userRole, navItems)
   const activeNav = visibleNavItems.find((item) => item.label === activeView) ?? visibleNavItems[0]
@@ -166,9 +157,65 @@ function App() {
     ? filterActivityForMember(activityLog, activeMemberId)
     : activityLog
 
+  const persistAuth = (token, role, memberId) => {
+    api.setAuthToken(token)
+    try {
+      window.localStorage.setItem(authStorageKey, JSON.stringify({ token, role, memberId: memberId ?? null }))
+    } catch {
+      // localStorage can be unavailable (private browsing, quota); the session
+      // still works for this tab, it just won't survive a refresh.
+    }
+  }
+
+  const clearAuth = () => {
+    api.setAuthToken(null)
+    try {
+      window.localStorage.removeItem(authStorageKey)
+    } catch {
+      // see persistAuth
+    }
+  }
+
+  // Always re-fetches from the server rather than patching local state, so the
+  // UI can never drift from what actually got written to Postgres.
+  const refreshData = async (role) => {
+    if (role === 'staff') {
+      const [membersPayload, activityPayload] = await Promise.all([api.members(), api.activity()])
+      const members = normalizeMembers(membersPayload.members)
+      setMemberDirectory(members)
+      setActivityLog(normalizeActivityLog(activityPayload.activities))
+      setActiveMemberId((current) => (
+        members.some((member) => member.memberId === current) ? current : (members[0]?.memberId ?? '')
+      ))
+    } else {
+      const [mePayload, activityPayload] = await Promise.all([api.me(), api.activity()])
+      const member = mePayload.member
+      setMemberDirectory(member ? normalizeMembers([member]) : [])
+      setActivityLog(normalizeActivityLog(activityPayload.activities))
+      if (member) {
+        setActiveMemberId(member.memberId)
+        setEarnForm((current) => ({ ...current, memberId: member.memberId }))
+        setRedeemForm((current) => ({ ...current, memberId: member.memberId }))
+      }
+    }
+  }
+
   useEffect(() => {
-    window.localStorage.setItem(storageKey, JSON.stringify({ memberDirectory, activityLog, activeMemberId }))
-  }, [memberDirectory, activityLog, activeMemberId])
+    if (!storedAuth?.token) {
+      setIsBootstrapping(false)
+      return
+    }
+    api.setAuthToken(storedAuth.token)
+    refreshData(storedAuth.role)
+      .then(() => {
+        setUserRole(storedAuth.role)
+        setIsAuthenticated(true)
+      })
+      .catch(() => clearAuth())
+      .finally(() => setIsBootstrapping(false))
+    // Only ever run once, at mount, to restore a saved session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handleMemberScan = () => {
     if (userRole !== 'staff') return
@@ -201,61 +248,54 @@ function App() {
     setStatusMessage('Member directory exported as CSV')
   }
 
-  const handleResetDemo = () => {
-    if (!window.confirm('Reset all saved demo members, balances, and activity?')) return
-    window.localStorage.removeItem(storageKey)
-    window.location.reload()
-  }
-
-  const handleLoginSubmit = (event) => {
-    event.preventDefault()
-    const email = loginForm.email.trim().toLowerCase()
-    const isManager = email === 'manager@kodokodo.ph' && loginForm.password === 'kodokodo123' && loginForm.role === 'staff'
-    const isMember = email === 'yuna@kodokodo.ph' && loginForm.password === 'kodokodo123' && loginForm.role === 'member'
-    if (!isManager && !isMember) {
-      setLoginError('Use one of the demo access profiles shown below.')
-      return
-    }
-
-    setLoginError('')
-    setUserRole(loginForm.role)
-    if (isMember) {
-      setActiveMemberId('KD-2048')
-      setActiveView('Overview')
-    }
-    setIsAuthenticated(true)
-  }
-
-  const handleSignupSubmit = (event) => {
-    event.preventDefault()
-    const normalizedEmail = signupForm.email.trim().toLowerCase()
-    const normalizedMobile = signupForm.mobile.trim().replace(/\s/g, '')
-    const duplicateMember = memberDirectory.find((member) => (
-      member.mobile.replace(/\s/g, '') === normalizedMobile || member.email.toLowerCase() === normalizedEmail
-    ))
-
-    if (duplicateMember) {
-      setLoginError(`${duplicateMember.name} already uses that mobile or email.`)
-      return
-    }
-
-    const memberId = `KD-${String(Date.now()).slice(-4)}`
-    setMemberDirectory((current) => [{
-      memberId,
-      name: signupForm.fullName.trim(),
-      mobile: signupForm.mobile.trim(),
-      email: normalizedEmail,
-      tier: 'Bronze',
-      lastVisit: 'New member',
-      points: 0,
-      visits: 0,
-    }, ...current])
-    setActiveMemberId(memberId)
-    setLoginError('')
-    setUserRole('member')
+  const handleSignOut = () => {
+    clearAuth()
+    setIsAuthenticated(false)
+    setUserRole('staff')
     setActiveView('Overview')
-    setStatusMessage(`${signupForm.fullName.trim()} joined Kodokodo Rewards`)
-    setIsAuthenticated(true)
+    setMemberDirectory([])
+    setActivityLog([])
+    setActiveMemberId('')
+  }
+
+  const handleLoginSubmit = async (event) => {
+    event.preventDefault()
+    try {
+      const { token, role, memberId } = await api.login({
+        email: loginForm.email.trim(),
+        password: loginForm.password,
+        role: loginForm.role,
+      })
+      persistAuth(token, role, memberId)
+      setLoginError('')
+      setUserRole(role)
+      await refreshData(role)
+      if (role === 'member') setActiveView('Overview')
+      setIsAuthenticated(true)
+    } catch (error) {
+      setLoginError(error.message)
+    }
+  }
+
+  const handleSignupSubmit = async (event) => {
+    event.preventDefault()
+    try {
+      const { token, role, memberId } = await api.signup({
+        fullName: signupForm.fullName.trim(),
+        mobile: signupForm.mobile.trim(),
+        email: signupForm.email.trim(),
+        password: signupForm.password,
+      })
+      persistAuth(token, role, memberId)
+      setLoginError('')
+      setUserRole(role)
+      await refreshData(role)
+      setActiveView('Overview')
+      setStatusMessage(`${signupForm.fullName.trim()} joined Kodokodo Rewards`)
+      setIsAuthenticated(true)
+    } catch (error) {
+      setLoginError(error.message)
+    }
   }
 
   const handleRewardSelect = (reward) => {
@@ -272,122 +312,67 @@ function App() {
     setActiveView('Forms')
   }
 
-  const handleJoinSubmit = (event) => {
+  const handleJoinSubmit = async (event) => {
     event.preventDefault()
     if (!joinForm.fullName.trim() || !joinForm.mobile.trim() || !joinForm.email.trim()) {
       setStatusMessage('Complete the member name, mobile, and email fields')
       return
     }
 
-    const normalizedMobile = joinForm.mobile.trim().replace(/\s/g, '')
-    const normalizedEmail = joinForm.email.trim().toLowerCase()
-    const duplicateMember = memberDirectory.find((member) => (
-      member.mobile.replace(/\s/g, '') === normalizedMobile || member.email.toLowerCase() === normalizedEmail
-    ))
-    if (duplicateMember) {
-      setStatusMessage(`${duplicateMember.name} already uses that mobile or email`)
-      return
+    try {
+      const { member } = await api.createMember({
+        fullName: joinForm.fullName.trim(),
+        mobile: joinForm.mobile.trim(),
+        email: joinForm.email.trim(),
+      })
+      await refreshData('staff')
+      setStatusMessage(`${member.name} is ready for Kodokodo Rewards`)
+      setActiveView('Members')
+      setJoinForm({ fullName: '', mobile: '', email: '', birthday: 'January' })
+    } catch (error) {
+      setStatusMessage(error.message)
     }
-
-    const memberId = `KD-${String(Date.now()).slice(-4)}`
-    setMemberDirectory((current) => [
-      { memberId, name: joinForm.fullName.trim(), mobile: joinForm.mobile.trim(), email: normalizedEmail, tier: 'Bronze', lastVisit: 'New member', points: 0, visits: 0 },
-      ...current.filter((member) => member.name !== joinForm.fullName.trim()),
-    ])
-    setActivityLog((current) => [{
-      memberId,
-      action: 'Member registered',
-      detail: joinForm.fullName.trim(),
-      amount: 'Bronze',
-      date: 'Today',
-    }, ...current].slice(0, 6))
-    setStatusMessage(`${joinForm.fullName} is ready for Kodokodo Rewards`)
-    setActiveView('Members')
-    setJoinForm({ fullName: '', mobile: '', email: '', birthday: 'January' })
   }
 
-  const handleEarnSubmit = (event) => {
+  const handleEarnSubmit = async (event) => {
     event.preventDefault()
     const purchaseAmount = parsePurchaseAmount(earnForm.purchaseAmount)
-    const member = memberDirectory.find((item) => item.memberId === earnForm.memberId.trim())
-    if (!member) {
-      setStatusMessage('Member ID was not found in the directory')
-      return
-    }
-    if (!earnForm.receiptNo.trim() || purchaseAmount === null || purchaseAmount <= 0) {
+    if (!earnForm.memberId.trim() || !earnForm.receiptNo.trim() || purchaseAmount === null || purchaseAmount <= 0) {
       setStatusMessage('Add a member ID, receipt number, and purchase amount')
       return
     }
-    if (hasProcessedReceipt(activityLog, earnForm.receiptNo)) {
-      setStatusMessage('That receipt has already earned points')
-      return
-    }
 
-    const earnedPoints = calculateEarnedPoints(purchaseAmount)
-    const nextMemberPoints = member.points + earnedPoints
-    const nextMemberVisits = member.visits + 1
-    const transactionId = `TX-${Date.now()}`
-    setMemberDirectory((current) => current.map((member) => (
-      member.memberId === earnForm.memberId.trim()
-        ? { ...member, tier: getTierStatus(nextMemberPoints).name, points: nextMemberPoints, visits: nextMemberVisits, lastVisit: 'Today' }
-        : member
-    )))
-    setActivityLog((current) => [{
-      memberId: member.memberId,
-      type: 'earn',
-      transactionId,
-      receiptNo: earnForm.receiptNo.trim(),
-      pointsBefore: member.points,
-      pointsChange: earnedPoints,
-      pointsAfter: nextMemberPoints,
-      action: 'Points earned',
-      detail: `${earnForm.serviceType} receipt ${earnForm.receiptNo}`,
-      amount: `+${earnedPoints} pts`,
-      date: 'Today',
-    }, ...current].slice(0, 6))
-    setStatusMessage(`${earnedPoints} points awarded to ${earnForm.memberId}`)
-    setEarnForm((current) => ({ ...current, receiptNo: '', purchaseAmount: '' }))
+    try {
+      const { points } = await api.earn({
+        memberId: earnForm.memberId.trim(),
+        receiptNo: earnForm.receiptNo.trim(),
+        purchaseAmount,
+        serviceType: earnForm.serviceType,
+      })
+      await refreshData('staff')
+      setStatusMessage(`${points} points awarded to ${earnForm.memberId}`)
+      setEarnForm((current) => ({ ...current, receiptNo: '', purchaseAmount: '' }))
+    } catch (error) {
+      setStatusMessage(error.message)
+    }
   }
 
-  const handleRedeemSubmit = (event) => {
+  const handleRedeemSubmit = async (event) => {
     event.preventDefault()
-    const member = memberDirectory.find((item) => item.memberId === redeemForm.memberId.trim())
     const reward = redeemOptions.find((item) => item.name === redeemForm.reward)
-    if (!member) {
-      setStatusMessage('Member ID was not found in the directory')
-      return
-    }
-    if (!reward) {
-      setStatusMessage('Select a valid reward')
-      return
-    }
-    if (!canRedeemReward(member, reward)) {
-      setStatusMessage(member.points < reward.points ? 'Not enough points for this reward' : `${reward.name} requires ${reward.requiredTier} tier`)
+    if (!redeemForm.memberId.trim() || !reward) {
+      setStatusMessage('Select a valid member ID and reward')
       return
     }
 
-    const rewardCost = reward.points
-    const nextMemberPoints = member.points - rewardCost
-    const transactionId = `TX-${Date.now()}`
-    setMemberDirectory((current) => current.map((member) => (
-      member.memberId === redeemForm.memberId.trim()
-        ? { ...member, tier: getTierStatus(nextMemberPoints).name, points: nextMemberPoints, lastVisit: 'Today' }
-        : member
-    )))
-    setSelectedReward(redeemForm.reward)
-    setActivityLog((current) => [{
-      memberId: member.memberId,
-      type: 'redeem',
-      transactionId,
-      pointsBefore: member.points,
-      pointsChange: -rewardCost,
-      pointsAfter: nextMemberPoints,
-      action: 'Reward redeemed',
-      detail: reward.name,
-      amount: `-${rewardCost} pts`,
-      date: 'Today',
-    }, ...current].slice(0, 6))
-    setStatusMessage(`${reward.name} redeemed for ${redeemForm.memberId}`)
+    try {
+      await api.redeem({ memberId: redeemForm.memberId.trim(), reward: reward.name })
+      await refreshData('staff')
+      setSelectedReward(reward.name)
+      setStatusMessage(`${reward.name} redeemed for ${redeemForm.memberId}`)
+    } catch (error) {
+      setStatusMessage(error.message)
+    }
   }
 
   const renderMainContent = () => {
@@ -967,6 +952,23 @@ function App() {
     }
   }
 
+  if (isBootstrapping) {
+    return (
+      <main className="login-shell">
+        <section className="login-panel">
+          <div className="login-brand">
+            <div className="brand-mark">K</div>
+            <div>
+              <p className="brand-kicker">Kodokodo</p>
+              <h1>Rewards console</h1>
+            </div>
+          </div>
+          <p>Restoring your session…</p>
+        </section>
+      </main>
+    )
+  }
+
   if (!isAuthenticated) {
     return (
       <main className="login-shell">
@@ -1115,11 +1117,8 @@ function App() {
               <button type="button" className="ghost-button primary-ghost" onClick={handleExport}>
                 Export
               </button>
-              <button type="button" className="ghost-button" onClick={handleResetDemo}>
-                Reset demo
-              </button>
             </>}
-            <button type="button" className="ghost-button" onClick={() => { setIsAuthenticated(false); setUserRole('staff'); setActiveView('Overview') }}>
+            <button type="button" className="ghost-button" onClick={handleSignOut}>
               Sign out
             </button>
           </div>

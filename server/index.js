@@ -140,6 +140,22 @@ const createApp = () => createServer(async (request, response) => {
     const user = authUser(request, store)
     if (!user) return json(response, 401, { error: 'Authentication required' })
 
+    if (request.method === 'POST' && url.pathname === '/api/members') {
+      if (user.role !== 'staff') return json(response, 403, { error: 'Staff access required' })
+      const { fullName, mobile, email } = await readBody(request)
+      const normalizedEmail = String(email).trim().toLowerCase()
+      const normalizedMobile = String(mobile).trim().replace(/\s/g, '')
+      if (!fullName?.trim() || !normalizedEmail || !normalizedMobile) return json(response, 400, { error: 'Complete all required fields' })
+      if (store.members.some((member) => member.email.toLowerCase() === normalizedEmail || member.mobile.replace(/\s/g, '') === normalizedMobile)) return json(response, 409, { error: 'A member already uses that email or mobile' })
+
+      const memberId = `KD-${String(Date.now()).slice(-4)}`
+      const member = { memberId, name: fullName.trim(), mobile: mobile.trim(), email: normalizedEmail, tier: 'Bronze', lastVisit: 'New member', points: 0, visits: 0 }
+      store.members.unshift(member)
+      store.activities.unshift(makeActivity(memberId, 'signup', { action: 'Member registered', detail: member.name, amount: 'Bronze' }))
+      await writeStore(store)
+      return json(response, 201, { member: publicMember(member) })
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/me') {
       const member = user.memberId ? store.members.find((item) => item.memberId === user.memberId) : null
       return json(response, 200, { role: user.role, member: member ? publicMember(member) : null })

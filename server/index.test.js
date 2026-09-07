@@ -82,6 +82,51 @@ test('backend enforces roles, duplicate receipts, and reward eligibility', async
   assert.equal(restrictedRewardResponse.status, 409)
 })
 
+test('staff can register a walk-in member without login credentials', async () => {
+  const loginResponse = await request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email: 'manager@kodokodo.ph', password: 'kodokodo123', role: 'staff' }),
+  })
+  const { token } = await loginResponse.json()
+
+  const createResponse = await request('/api/members', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ fullName: 'Test Walk-in', mobile: '+63 917 000 0001', email: 'walkin@kodokodo.ph' }),
+  })
+  const createPayload = await createResponse.json()
+  assert.equal(createResponse.status, 201)
+  assert.equal(createPayload.member.name, 'Test Walk-in')
+  assert.equal(createPayload.member.points, 0)
+  assert.equal(createPayload.member.email, undefined, 'public member shape should not leak email')
+
+  const duplicateResponse = await request('/api/members', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ fullName: 'Duplicate', mobile: '+63 917 000 0001', email: 'other@kodokodo.ph' }),
+  })
+  assert.equal(duplicateResponse.status, 409)
+
+  const membersResponse = await request('/api/members', { headers: { Authorization: `Bearer ${token}` } })
+  const membersPayload = await membersResponse.json()
+  assert.ok(membersPayload.members.some((member) => member.name === 'Test Walk-in'))
+})
+
+test('member token cannot register a walk-in member', async () => {
+  const loginResponse = await request('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email: 'yuna@kodokodo.ph', password: 'kodokodo123', role: 'member' }),
+  })
+  const { token } = await loginResponse.json()
+
+  const createResponse = await request('/api/members', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ fullName: 'Should Fail', mobile: '+63 917 000 0002', email: 'shouldfail@kodokodo.ph' }),
+  })
+  assert.equal(createResponse.status, 403)
+})
+
 test('member token cannot access staff member directory', async () => {
   const loginResponse = await request('/api/auth/login', {
     method: 'POST',
