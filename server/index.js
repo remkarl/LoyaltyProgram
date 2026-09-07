@@ -1,8 +1,8 @@
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createJsonFileStore, createPostgresPool, createPostgresStore } from './store.js'
 
 const port = Number(process.env.PORT ?? 8787)
 const dataPath = process.env.KODOKODO_DATA_PATH ?? join(dirname(fileURLToPath(import.meta.url)), 'data.json')
@@ -19,16 +19,6 @@ const rewards = [
 const tierRank = { Bronze: 0, Silver: 1, Gold: 2 }
 
 const getTier = (points) => points >= 1000 ? 'Gold' : points >= 500 ? 'Silver' : 'Bronze'
-
-const readStore = () => {
-  if (!existsSync(dataPath)) return null
-  return JSON.parse(readFileSync(dataPath, 'utf8'))
-}
-
-const writeStore = (store) => {
-  mkdirSync(dirname(dataPath), { recursive: true })
-  writeFileSync(dataPath, JSON.stringify(store, null, 2))
-}
 
 const hashPassword = (password, salt = randomBytes(16).toString('hex')) => {
   const hash = scryptSync(password, salt, 64).toString('hex')
@@ -56,11 +46,22 @@ const seedStore = () => ({
   activities: [],
 })
 
-const getStore = () => {
-  const store = readStore() ?? seedStore()
-  writeStore(store)
-  return store
+// Postgres is used whenever DATABASE_URL is set (as it is on Render, via the
+// free Postgres instance in render.yaml). Otherwise we fall back to the
+// original JSON-file store, so local dev and the test suite need no
+// external services or extra dependencies.
+let storeBackendPromise = null
+const getStoreBackend = () => {
+  if (!storeBackendPromise) {
+    storeBackendPromise = process.env.DATABASE_URL
+      ? createPostgresPool(process.env.DATABASE_URL).then((pool) => createPostgresStore(pool, seedStore))
+      : Promise.resolve(createJsonFileStore(dataPath, seedStore))
+  }
+  return storeBackendPromise
 }
+
+const getStore = async () => (await getStoreBackend()).getStore()
+const writeStore = async (store) => (await getStoreBackend()).writeStore(store)
 
 const json = (response, status, payload) => {
   response.writeHead(status, {
@@ -102,7 +103,7 @@ const makeActivity = (memberId, type, fields) => ({
 const createApp = () => createServer(async (request, response) => {
   if (request.method === 'OPTIONS') return json(response, 204, {})
 
-  const store = getStore()
+  const store = await getStore()
   const url = new URL(request.url, `http://${request.headers.host}`)
 
   if (request.method === 'GET' && url.pathname === '/api/health') return json(response, 200, { ok: true })
@@ -130,7 +131,7 @@ const createApp = () => createServer(async (request, response) => {
       store.members.unshift(member)
       store.users.push(user)
       store.activities.unshift(makeActivity(memberId, 'signup', { action: 'Member registered', detail: member.name, amount: 'Bronze' }))
-      writeStore(store)
+      await writeStore(store)
       const token = randomBytes(32).toString('hex')
       sessions.set(token, { userId: user.id })
       return json(response, 201, { token, role: user.role, memberId })
@@ -170,7 +171,7 @@ const createApp = () => createServer(async (request, response) => {
       member.tier = getTier(member.points)
       member.lastVisit = 'Today'
       store.activities.unshift(makeActivity(memberId, 'earn', { receiptNo: receiptNo.trim(), pointsBefore, pointsChange: points, pointsAfter: member.points, action: 'Points earned', detail: `${serviceType} receipt ${receiptNo.trim()}`, amount: `+${points} pts` }))
-      writeStore(store)
+      await writeStore(store)
       return json(response, 200, { member: publicMember(member), points })
     }
 
@@ -187,7 +188,7 @@ const createApp = () => createServer(async (request, response) => {
       member.tier = getTier(member.points)
       member.lastVisit = 'Today'
       store.activities.unshift(makeActivity(memberId, 'redeem', { pointsBefore, pointsChange: -selectedReward.points, pointsAfter: member.points, action: 'Reward redeemed', detail: selectedReward.name, amount: `-${selectedReward.points} pts` }))
-      writeStore(store)
+      await writeStore(store)
       return json(response, 200, { member: publicMember(member), reward: selectedReward })
     }
 

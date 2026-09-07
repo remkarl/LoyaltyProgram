@@ -14,7 +14,7 @@ A mobile-first Korean restaurant loyalty prototype built with React, Vite, and a
 
 ## Backend API
 
-The project now includes a dependency-free Node API with JSON-file persistence for local development.
+The Node API defaults to a dependency-free, JSON-file store for local development. Set `DATABASE_URL` and it automatically switches to Postgres instead (see [server/store.js](server/store.js)) — that's the path used in production on Render.
 
 ```bash
 npm run server
@@ -30,19 +30,23 @@ The API runs at `http://localhost:8787` and provides:
 - `POST /api/earn` for staff
 - `POST /api/redeem` for staff
 
-Local backend data is written to `server/data.json` and ignored by Git. The current React UI still supports its browser-only fallback; wiring the UI fully to the API is the next integration step.
+Local backend data is written to `server/data.json` (ignored by Git) unless `DATABASE_URL` is set. The current React UI still supports its browser-only fallback; wiring the UI fully to the API is the next integration step.
 
 ## Deploy with Vercel + Render
 
-The repository includes `vercel.json` for the Vite SPA and `render.yaml` for the Node API.
+The repository includes `vercel.json` for the Vite SPA and `render.yaml` for the Node API + a Postgres database, both on Render's **free** plan — no persistent disk, no paid tier required.
 
 1. Push the repository to GitHub.
 2. In Vercel, import the repository and use `npm run build` with output directory `dist`.
-3. In Render, create a Blueprint from the repository. It will create `kodokodo-rewards-api` from `render.yaml`.
-4. Copy the Vercel deployment URL into the Render `FRONTEND_ORIGIN` environment variable.
+3. In Render, create a Blueprint from the repository. It creates two resources from `render.yaml`: the `kodokodo-rewards-api` web service and a free `kodokodo-db` Postgres instance, and wires `DATABASE_URL` between them automatically.
+4. Copy the Vercel deployment URL into the Render `FRONTEND_ORIGIN` environment variable on `kodokodo-rewards-api`.
 5. Redeploy the Render service and verify `https://YOUR-API.onrender.com/api/health` returns `{ "ok": true }`.
 
-The Render blueprint uses a 1 GB persistent disk because the current API stores data in JSON. Persistent disks require Render's paid Starter service. For production scale, replace JSON storage with Postgres and move sessions to a shared store such as Redis.
+**Free-tier tradeoffs to know before relying on this for real member data:**
+
+- The free web service spins down after 15 minutes of idle traffic and takes ~1 minute to wake back up on the next request.
+- Render's free Postgres instance **auto-deletes after 30 days** (you get a 14-day warning first). Upgrade the database to a paid plan (starts at $6/month) before then if you want to keep the data, or treat this deployment as a demo/prototype and expect to reseed it periodically.
+- The store itself is still a single JSON blob in one Postgres row (see `server/store.js`) — it swaps out the disk-backed file for a DB row with minimal code change, but it isn't a normalized schema. For real production scale, move to proper `users`/`members`/`activities` tables and a shared session store such as Redis.
 
 ## Demo access
 
@@ -77,4 +81,4 @@ npm run build
 npm test
 ```
 
-The tests cover tier rules, member permissions, activity privacy, receipt de-duplication, purchase parsing, reward eligibility, and CSV export formatting.
+The tests cover tier rules, member permissions, activity privacy, receipt de-duplication, purchase parsing, reward eligibility, CSV export formatting, and the storage layer (both the JSON-file store and the Postgres store's SQL, the latter against a fake in-memory pool so `npm test` never needs a live database).
